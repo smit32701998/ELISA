@@ -50,6 +50,12 @@ def write_report(result: AnalysisResult, out_path: str, plot_prefix: str) -> str
     ws_sum["A5"] = "Blank OD subtracted"
     ws_sum["B5"] = round(result.blank_od, 5)
     row = 7
+    if result.available_tables and len(result.available_tables) > 1:
+        ws_sum["A6"] = "OD table used"
+        ws_sum["B6"] = result.source_table
+        ws_sum["A7"] = "Tables found in source"
+        ws_sum["B7"] = ", ".join(result.available_tables)
+        row = 9
     for name, value in result.fit.params.items():
         ws_sum.cell(row=row, column=1, value=name)
         ws_sum.cell(row=row, column=2, value=round(float(value), 6))

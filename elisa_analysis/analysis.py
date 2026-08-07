@@ -21,6 +21,8 @@ class AnalysisResult:
     samples_table: pd.DataFrame
     blank_od: float
     units: str
+    source_table: str = None
+    available_tables: list = None
 
 
 def _well_dataframe(plate: PlateData) -> pd.DataFrame:
@@ -155,4 +157,6 @@ def analyze(
         samples_table=samples_table,
         blank_od=blank_od_used,
         units=units,
+        source_table=plate.source_table,
+        available_tables=plate.available_tables,
     )

@@ -68,6 +68,8 @@ python -m elisa_analysis.cli --input my_plate.xlsx --output-dir results \
 ```
 
 Options:
+- `--layout` — separate layout workbook, for native instrument exports (see below)
+- `--table` — pick a specific OD grid by name when the raw source has more than one
 - `--model {4PL,5PL}` — logistic model to fit (default `4PL`)
 - `--weight {none,1/y,1/y2}` — regression weighting (default `1/y2`)
 - `--units` — concentration unit label used on axes/tables (default `conc. units`)
@@ -76,6 +78,49 @@ Options:
 This writes `<name>_report.xlsx` (results tables + embedded charts) and two
 standalone PNGs (`<name>_standard_curve.png`, `<name>_sample_concentrations.png`)
 into `--output-dir`.
+
+## Using a native instrument export (e.g. Tecan Spark)
+
+You don't need to hand-copy data out of your plate reader's own export. Point
+`--input` straight at the raw file the instrument produced (e.g. a Tecan
+Spark / SparkControl "Result sheet" .xlsx) and pass `--layout` pointing at a
+small, separate workbook holding just the assay layout — which wells are
+standards/samples, their concentrations, and dilution factors. Since the
+layout is usually the same for every run of a given kit, you typically only
+fill it in once and reuse it:
+
+```bash
+python scripts/make_layout_template.py my_kit_layout.xlsx   # fill this in once per kit
+
+python -m elisa_analysis.cli \
+    --input P_Yoon_IL6_2026-07-29.xlsx \      # straight from SparkControl
+    --layout my_kit_layout.xlsx \
+    --output-dir results
+```
+
+Tecan/SparkControl exports place the OD grid below several rows of run
+metadata (method name, wavelengths, date, plate type), and for
+dual-wavelength reads they can contain up to three 8x12 grids per sheet:
+the raw absorbance, the reference-wavelength readout, and the
+already-corrected `Difference` (raw − reference). `load_plate` scans the
+whole sheet for every such grid automatically and:
+
+1. uses the `Difference` table if one was exported (the standard corrected
+   OD for ELISA),
+2. otherwise computes raw − reference itself if both are present without an
+   explicit difference table,
+3. otherwise falls back to whichever single grid it found.
+
+Pass `--table "Reference"` (substring match, case-insensitive) to force a
+specific table instead. `scripts/make_tecan_example.py` generates a
+synthetic Tecan-style raw file + matching layout workbook
+(`examples/tecan_spark_raw_example.xlsx` / `tecan_spark_layout_example.xlsx`)
+if you want to see the expected shape without a real export on hand.
+
+This importer looks for any 8x12 grid (column headers `1..12`, row headers
+`A..H`) anywhere in the workbook, so it isn't limited to Tecan specifically
+— other readers that export a similarly shaped grid (with or without a
+metadata header block above it) should load the same way.
 
 ## Try it with the bundled example
 
