@@ -65,6 +65,15 @@ def _sheet_name(sheets: dict, *candidates: str) -> Optional[str]:
     return None
 
 
+def detect_raw_data_sheet(source) -> Optional[str]:
+    """Return the "Raw Data"-ish sheet name if `source` looks like a combined
+    template (also has Plate Layout/Standards sheets alongside the OD grid),
+    else None -- meaning the whole workbook should be scanned for grids (the
+    case for a native instrument export with no separate layout sheets)."""
+    sheets = pd.read_excel(source, sheet_name=None, header=None)
+    return _sheet_name(sheets, "Raw Data", "RawData", "Data", "OD")
+
+
 def _find_all_grid_origins(df: pd.DataFrame):
     """Find every (header_row, header_col) where a 1..12 column header row
     is immediately followed by 8 rows labeled A..H in the preceding column."""
@@ -194,23 +203,26 @@ def select_od_table(tables: dict, table: Optional[str] = None):
     return first_label, tables[first_label]
 
 
-def _parse_standards_sheet(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_standards_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce a (Label, Concentration)-ish DataFrame with real column headers
+    into the canonical ["Label", "Concentration"] form."""
     df = df.copy()
-    df.columns = [str(c).strip() for c in df.iloc[0]]
-    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = [str(c).strip() for c in df.columns]
     label_col = next(c for c in df.columns if c.lower().startswith("label"))
     conc_col = next(c for c in df.columns if c.lower().startswith("conc"))
-    df = df[[label_col, conc_col]].dropna(how="all")
-    df.columns = ["Label", "Concentration"]
-    df["Label"] = df["Label"].astype(str).str.strip()
-    df["Concentration"] = pd.to_numeric(df["Concentration"], errors="coerce")
-    return df.dropna(subset=["Concentration"]).reset_index(drop=True)
+    out = df[[label_col, conc_col]].copy()
+    out.columns = ["Label", "Concentration"]
+    out["Label"] = out["Label"].astype(str).str.strip()
+    out = out[(out["Label"] != "") & (out["Label"].str.lower() != "none")]
+    out["Concentration"] = pd.to_numeric(out["Concentration"], errors="coerce")
+    return out.dropna(subset=["Concentration"]).reset_index(drop=True)
 
 
-def _parse_samples_sheet(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_samples_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce a (Label, Sample Name, Dilution Factor)-ish DataFrame with real
+    column headers into the canonical ["Label", "SampleName", "Dilution"] form."""
     df = df.copy()
-    df.columns = [str(c).strip() for c in df.iloc[0]]
-    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = [str(c).strip() for c in df.columns]
     cols_lower = {c.lower(): c for c in df.columns}
     label_c = next(v for k, v in cols_lower.items() if k.startswith("label"))
     name_c = next((v for k, v in cols_lower.items() if "name" in k), None)
@@ -220,7 +232,76 @@ def _parse_samples_sheet(df: pd.DataFrame) -> pd.DataFrame:
     out["SampleName"] = df[name_c].astype(str).str.strip() if name_c else out["Label"]
     out["Dilution"] = pd.to_numeric(df[dil_c], errors="coerce") if dil_c else 1.0
     out["Dilution"] = out["Dilution"].fillna(1.0)
-    return out.dropna(subset=["Label"]).reset_index(drop=True)
+    out = out[(out["Label"] != "") & (out["Label"].str.lower() != "none")]
+    return out.reset_index(drop=True)
+
+
+def _parse_standards_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.iloc[0]]
+    return normalize_standards_df(df.iloc[1:].reset_index(drop=True))
+
+
+def _parse_samples_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.iloc[0]]
+    return normalize_samples_df(df.iloc[1:].reset_index(drop=True))
+
+
+def read_layout_workbook(source) -> tuple:
+    """Parse Plate Layout / Standards / Samples sheets out of a workbook
+    (path or file-like). Returns (label_grid, standards_df, samples_df)."""
+    sheets = pd.read_excel(source, sheet_name=None, header=None)
+
+    layout_name = _sheet_name(sheets, "Plate Layout", "Layout")
+    std_name = _sheet_name(sheets, "Standards", "Standard Concentrations")
+    sample_name = _sheet_name(sheets, "Samples", "Sample Info")
+
+    if layout_name is None:
+        raise ValueError("Workbook is missing a 'Plate Layout' sheet describing what is in each well.")
+    if std_name is None:
+        raise ValueError("Workbook is missing a 'Standards' sheet mapping standard labels to concentrations.")
+
+    origins = _find_all_grid_origins(sheets[layout_name])
+    label_grid = _read_grid_at(sheets[layout_name], *origins[0])
+    label_grid = {
+        wid: (str(v).strip() if v is not None and str(v).strip().lower() != "nan" else None)
+        for wid, v in label_grid.items()
+    }
+
+    std_df = _parse_standards_sheet(sheets[std_name])
+    samples_df = _parse_samples_sheet(sheets[sample_name]) if sample_name else pd.DataFrame(
+        columns=["Label", "SampleName", "Dilution"]
+    )
+    return label_grid, std_df, samples_df
+
+
+def build_plate_data(
+    od_grid: dict,
+    label_grid: dict,
+    standards: pd.DataFrame,
+    samples: pd.DataFrame,
+    source_table: Optional[str] = None,
+    available_tables: Optional[list] = None,
+) -> PlateData:
+    """Assemble a PlateData from already-parsed pieces (used by both the
+    file-based loaders below and interfaces like the Streamlit app that let
+    a user edit the layout/standards/samples directly)."""
+    wells = []
+    for row_letter in ROWS:
+        for col_num in COLS:
+            wid = f"{row_letter}{col_num}"
+            label = label_grid.get(wid)
+            label = str(label).strip() if label is not None and str(label).strip().lower() != "nan" else None
+            label = label or None
+            wells.append(Well(wid, row_letter, col_num, label, od_grid.get(wid)))
+    return PlateData(
+        wells=wells,
+        standards=standards,
+        samples=samples,
+        source_table=source_table,
+        available_tables=available_tables or [],
+    )
 
 
 def load_plate(raw_path: str, layout_path: Optional[str] = None, table: Optional[str] = None) -> PlateData:
@@ -233,24 +314,9 @@ def load_plate(raw_path: str, layout_path: Optional[str] = None, table: Optional
     / SparkControl export), and the layout/standards/samples come from
     layout_path instead.
     """
-    layout_source = layout_path or raw_path
-    layout_sheets = pd.read_excel(layout_source, sheet_name=None, header=None)
-
-    layout_name = _sheet_name(layout_sheets, "Plate Layout", "Layout")
-    std_name = _sheet_name(layout_sheets, "Standards", "Standard Concentrations")
-    sample_name = _sheet_name(layout_sheets, "Samples", "Sample Info")
-
-    if layout_name is None:
-        raise ValueError(
-            f"'{layout_source}' is missing a 'Plate Layout' sheet describing what is in each well."
-        )
-    if std_name is None:
-        raise ValueError(
-            f"'{layout_source}' is missing a 'Standards' sheet mapping standard labels to concentrations."
-        )
-
     if layout_path is None:
-        raw_name = _sheet_name(layout_sheets, "Raw Data", "RawData", "Data", "OD")
+        raw_sheets = pd.read_excel(raw_path, sheet_name=None, header=None)
+        raw_name = _sheet_name(raw_sheets, "Raw Data", "RawData", "Data", "OD")
         if raw_name is None:
             raise ValueError(
                 "Workbook is missing a 'Raw Data' sheet with the 8x12 plate grid of OD readings. "
@@ -258,31 +324,15 @@ def load_plate(raw_path: str, layout_path: Optional[str] = None, table: Optional
                 "layout workbook instead."
             )
         all_tables = extract_od_tables(raw_path, sheet_name=raw_name)
+        label_grid, std_df, samples_df = read_layout_workbook(raw_path)
     else:
         all_tables = extract_od_tables(raw_path)
+        label_grid, std_df, samples_df = read_layout_workbook(layout_path)
 
     source_label, od_grid = select_od_table(all_tables, table=table)
 
-    origins = _find_all_grid_origins(layout_sheets[layout_name])
-    label_grid = _read_grid_at(layout_sheets[layout_name], *origins[0])
-
-    wells = []
-    for row_letter in ROWS:
-        for col_num in COLS:
-            wid = f"{row_letter}{col_num}"
-            label = label_grid.get(wid)
-            label = str(label).strip() if label is not None and str(label).strip().lower() != "nan" else None
-            wells.append(Well(wid, row_letter, col_num, label, od_grid.get(wid)))
-
-    std_df = _parse_standards_sheet(layout_sheets[std_name])
-    samples_df = _parse_samples_sheet(layout_sheets[sample_name]) if sample_name else pd.DataFrame(
-        columns=["Label", "SampleName", "Dilution"]
-    )
-
-    return PlateData(
-        wells=wells,
-        standards=std_df,
-        samples=samples_df,
+    return build_plate_data(
+        od_grid, label_grid, std_df, samples_df,
         source_table=source_label,
         available_tables=list(all_tables.keys()),
     )
@@ -291,3 +341,91 @@ def load_plate(raw_path: str, layout_path: Optional[str] = None, table: Optional
 def load_plate_workbook(path: str) -> PlateData:
     """Backwards-compatible alias for the combined single-workbook template."""
     return load_plate(path)
+
+
+def layout_grid_to_dataframe(label_grid: Optional[dict] = None) -> pd.DataFrame:
+    """8x12 DataFrame (index A-H, columns 1-12) for editing in a UI grid widget."""
+    data = {
+        col_num: [
+            (label_grid or {}).get(f"{row_letter}{col_num}", "") or ""
+            for row_letter in ROWS
+        ]
+        for col_num in COLS
+    }
+    return pd.DataFrame(data, index=ROWS)
+
+
+def dataframe_to_layout_grid(df: pd.DataFrame) -> dict:
+    """Inverse of layout_grid_to_dataframe: an edited 8x12 DataFrame back to a well->label dict."""
+    grid = {}
+    for row_letter in ROWS:
+        if row_letter not in df.index:
+            continue
+        for col_num in COLS:
+            col_key = col_num if col_num in df.columns else str(col_num)
+            if col_key not in df.columns:
+                continue
+            val = df.at[row_letter, col_key]
+            text = str(val).strip() if val is not None else ""
+            grid[f"{row_letter}{col_num}"] = text if text.lower() != "nan" else ""
+    return grid
+
+
+def default_layout_dataframe() -> pd.DataFrame:
+    grid = {}
+    for i, row_letter in enumerate(ROWS):
+        grid[f"{row_letter}1"] = f"STD{i + 1}"
+        grid[f"{row_letter}2"] = f"STD{i + 1}"
+    return layout_grid_to_dataframe(grid)
+
+
+def default_standards_dataframe() -> pd.DataFrame:
+    return pd.DataFrame(
+        {"Label": [f"STD{i}" for i in range(8, 0, -1)], "Concentration": [None] * 8}
+    )
+
+
+def default_samples_dataframe() -> pd.DataFrame:
+    return pd.DataFrame({"Label": ["UNK1"], "SampleName": ["Patient 001"], "Dilution": [1.0]})
+
+
+def write_layout_workbook(label_grid: dict, standards_df: pd.DataFrame, samples_df: pd.DataFrame, out):
+    """Write Plate Layout / Standards / Samples sheets to `out` (a path or
+    file-like/BytesIO), in the same shape read_layout_workbook expects back."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+
+    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    header_font = Font(bold=True)
+
+    wb = Workbook()
+    ws_layout = wb.active
+    ws_layout.title = "Plate Layout"
+    ws_layout.cell(row=1, column=1, value="Well").font = header_font
+    for j, col_num in enumerate(COLS):
+        c = ws_layout.cell(row=1, column=2 + j, value=col_num)
+        c.font = header_font
+        c.fill = header_fill
+    for i, row_letter in enumerate(ROWS):
+        c = ws_layout.cell(row=2 + i, column=1, value=row_letter)
+        c.font = header_font
+        c.fill = header_fill
+        for j, col_num in enumerate(COLS):
+            ws_layout.cell(row=2 + i, column=2 + j, value=label_grid.get(f"{row_letter}{col_num}") or None)
+
+    ws_std = wb.create_sheet("Standards")
+    ws_std.append(["Label", "Concentration"])
+    for c in ws_std[1]:
+        c.font, c.fill = header_font, header_fill
+    for _, row in standards_df.iterrows():
+        ws_std.append([row["Label"], row["Concentration"]])
+
+    ws_smp = wb.create_sheet("Samples")
+    ws_smp.append(["Label", "Sample Name", "Dilution Factor"])
+    for c in ws_smp[1]:
+        c.font, c.fill = header_font, header_fill
+    for _, row in samples_df.iterrows():
+        ws_smp.append([row["Label"], row.get("SampleName", row["Label"]), row.get("Dilution", 1.0)])
+
+    wb.save(out)
+    return out

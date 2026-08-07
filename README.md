@@ -30,6 +30,19 @@ pip install -r requirements.txt
 
 (Optional, for the `elisa-analyze` command-line shortcut: `pip install -e .`)
 
+## Web interface
+
+```bash
+streamlit run app.py
+```
+
+Opens a browser UI where you can upload your raw-data file, edit the plate
+layout as an interactive 8x12 grid (and the standards/samples tables) right
+in the page, run the analysis, and see the Prism-style charts and results
+tables immediately — with buttons to download the full Excel report and to
+save your layout for reuse next time. This works with either the combined
+template or a native instrument export (see below); no command line needed.
+
 ## Input workbook format
 
 Your Excel file needs four sheets. Run `python scripts/make_template.py`
