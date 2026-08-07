@@ -17,6 +17,18 @@ PRISM_RED = "#EE2E31"
 PRISM_BLACK = "#000000"
 
 
+def _reserve_top_margin(ax, frac=0.30):
+    """Extend the y-axis top limit so an annotation box placed near the top
+    of the axes (in axes-fraction coordinates) lands in guaranteed empty
+    space instead of overlapping the tallest data point/bar. Must be called
+    after all data-bearing artists (bars, errorbars, lines) are plotted, so
+    it starts from their auto-scaled range."""
+    ax.relim()
+    ax.autoscale_view()
+    y0, y1 = ax.get_ylim()
+    ax.set_ylim(y0, y1 + (y1 - y0) * frac)
+
+
 def _apply_prism_style(ax):
     ax.set_facecolor("white")
     ax.figure.set_facecolor("white")
@@ -73,6 +85,8 @@ def plot_standard_curve(result: AnalysisResult, title: str = "Standard Curve", a
     ax.set_title(title, fontsize=13, fontfamily="sans-serif", fontweight="bold")
     ax.xaxis.set_major_locator(mticker.LogLocator(base=10))
     ax.grid(False)
+
+    _reserve_top_margin(ax, frac=0.30)
 
     param_str = ", ".join(f"{k}={v:.4g}" for k, v in fit.params.items())
     annotation = f"{fit.model}: R² = {fit.r_squared:.4f}\n{param_str}"
@@ -154,12 +168,22 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
     # Dilution factor gets its own row of labels below the sample names --
     # a single rotated multi-line tick label renders with the lines
     # overlapping, so this is a second, independently-positioned annotation.
+    # Its vertical offset is measured from the actual rendered tick labels
+    # (rather than a fixed guess) so it clears them regardless of how long
+    # the sample names are or how much they wrap.
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    tick_labels = ax.get_xticklabels()
+    max_label_height_px = max((lbl.get_window_extent(renderer).height for lbl in tick_labels), default=0)
+    dilution_offset = -(max_label_height_px * 72.0 / fig.dpi + 8)
+
     dilution_trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
     for i, dil in enumerate(samples["Dilution"]):
         ax.annotate(
             _fmt_dilution(dil),
             xy=(x_pos[i], 0), xycoords=dilution_trans,
-            xytext=(0, -48), textcoords="offset points",
+            xytext=(0, dilution_offset), textcoords="offset points",
             ha="right", va="top", fontsize=8, color="#555555",
             rotation=45, rotation_mode="anchor",
         )
@@ -187,6 +211,8 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
                 fontweight="bold",
                 zorder=4,
             )
+
+    _reserve_top_margin(ax, frac=0.32)
 
     key_lines = ["×N below sample name = dilution factor; bar height = interpolated conc. × dilution"]
     if has_star:
