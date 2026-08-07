@@ -42,6 +42,10 @@ def main(argv=None) -> int:
         "--weight", choices=["none", "1/y", "1/y2"], default="1/y2", help="Regression weighting scheme."
     )
     parser.add_argument("--units", default="conc. units", help="Concentration unit label for axes/tables.")
+    parser.add_argument(
+        "--analyte", default="", help="Name of the protein/analyte being measured (e.g. 'Human CXCL10'). "
+        "Carried through as the title on every chart and the Excel report.",
+    )
     parser.add_argument("--no-blank-subtract", action="store_true", help="Skip blank OD subtraction.")
     args = parser.parse_args(argv)
 
@@ -56,6 +60,7 @@ def main(argv=None) -> int:
         weight_mode=args.weight,
         blank_subtract=not args.no_blank_subtract,
         units=args.units,
+        analyte=args.analyte,
     )
 
     base = os.path.splitext(os.path.basename(args.input))[0]

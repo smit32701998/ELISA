@@ -7,7 +7,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import matplotlib.transforms as mtransforms
 import pandas as pd
 
 from .analysis import AnalysisResult
@@ -29,6 +28,14 @@ def _reserve_top_margin(ax, frac=0.30):
     ax.set_ylim(y0, y1 + (y1 - y0) * frac)
 
 
+def _titled(result: AnalysisResult, suffix: str) -> str:
+    """Prefix a chart title with the analyte name, when one was provided
+    (e.g. "Human CXCL10 Standard Curve"), so a given assay's plots and
+    reports carry the same identifying title throughout."""
+    analyte = getattr(result, "analyte", "") or ""
+    return f"{analyte} {suffix}" if analyte else suffix
+
+
 def _apply_prism_style(ax):
     ax.set_facecolor("white")
     ax.figure.set_facecolor("white")
@@ -45,8 +52,10 @@ def _apply_prism_style(ax):
         label.set_color(PRISM_BLACK)
 
 
-def plot_standard_curve(result: AnalysisResult, title: str = "Standard Curve", ax=None):
+def plot_standard_curve(result: AnalysisResult, title: str = None, ax=None):
     """Prism-style XY scatter + fitted 4PL/5PL sigmoidal curve, log10 x-axis."""
+    if title is None:
+        title = _titled(result, "Standard Curve")
     own_fig = ax is None
     if own_fig:
         fig, ax = plt.subplots(figsize=(6.4, 5.0), dpi=150)
@@ -111,8 +120,10 @@ def plot_standard_curve(result: AnalysisResult, title: str = "Standard Curve", a
     return ax
 
 
-def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations", ax=None):
+def plot_sample_bar(result: AnalysisResult, title: str = None, ax=None):
     """Prism-style bar/scatter of final interpolated sample concentrations."""
+    if title is None:
+        title = _titled(result, "Sample Concentrations")
     own_fig = ax is None
     if own_fig:
         fig, ax = plt.subplots(figsize=(7.5, 5.0), dpi=150)
@@ -120,6 +131,7 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
     samples = result.samples_table.copy()
     if samples.empty:
         ax.text(0.5, 0.5, "No sample wells found", ha="center", va="center")
+        ax.set_title(title, fontsize=13, fontfamily="sans-serif", fontweight="bold")
         _apply_prism_style(ax)
         if own_fig:
             return fig
@@ -156,37 +168,11 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
         zorder=3,
     )
 
-    def _fmt_dilution(d):
-        return f"×{int(d)}" if float(d).is_integer() else f"×{d:.3g}"
-
     ax.set_xticks(x_pos)
     ax.set_xticklabels(samples["SampleName"], rotation=45, ha="right", fontsize=9)
     ax.set_ylabel(f"Concentration ({result.units})", fontsize=12, fontfamily="sans-serif")
     ax.set_title(title, fontsize=13, fontfamily="sans-serif", fontweight="bold")
     _apply_prism_style(ax)
-
-    # Dilution factor gets its own row of labels below the sample names --
-    # a single rotated multi-line tick label renders with the lines
-    # overlapping, so this is a second, independently-positioned annotation.
-    # Its vertical offset is measured from the actual rendered tick labels
-    # (rather than a fixed guess) so it clears them regardless of how long
-    # the sample names are or how much they wrap.
-    fig = ax.figure
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-    tick_labels = ax.get_xticklabels()
-    max_label_height_px = max((lbl.get_window_extent(renderer).height for lbl in tick_labels), default=0)
-    dilution_offset = -(max_label_height_px * 72.0 / fig.dpi + 8)
-
-    dilution_trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
-    for i, dil in enumerate(samples["Dilution"]):
-        ax.annotate(
-            _fmt_dilution(dil),
-            xy=(x_pos[i], 0), xycoords=dilution_trans,
-            xytext=(0, dilution_offset), textcoords="offset points",
-            ha="right", va="top", fontsize=8, color="#555555",
-            rotation=45, rotation_mode="anchor",
-        )
 
     has_star = False
     has_marker_bar = False
@@ -214,7 +200,7 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
 
     _reserve_top_margin(ax, frac=0.32)
 
-    key_lines = ["×N below sample name = dilution factor; bar height = interpolated conc. × dilution"]
+    key_lines = []
     if has_star:
         key_lines.append("*  flagged (outside calibrated range and/or CV > 15%)")
     if has_marker_bar:

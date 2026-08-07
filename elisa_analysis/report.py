@@ -44,8 +44,10 @@ def write_report(result: AnalysisResult, out_path: str, plot_prefix: str) -> str
 
     ws_sum = wb.active
     ws_sum.title = "Summary"
-    ws_sum["A1"] = "ELISA Analysis Report"
+    report_title = f"{result.analyte} ELISA Analysis Report" if result.analyte else "ELISA Analysis Report"
+    ws_sum["A1"] = report_title
     ws_sum["A1"].font = Font(size=16, bold=True)
+    wb.properties.title = report_title
     ws_sum["A3"] = "Curve model"
     ws_sum["B3"] = result.fit.model
     ws_sum["A4"] = "R²"

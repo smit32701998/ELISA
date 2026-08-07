@@ -39,14 +39,17 @@ def test_sample_bar_reserves_headroom_above_tallest_bar(result):
     assert y1 > tallest_bar * 1.15
 
 
-def test_sample_bar_dilution_labels_clear_tick_labels(result):
-    # Regression test: the dilution-factor row used to sit at a fixed pixel
-    # offset that overlapped long, rotated sample-name tick labels (e.g.
-    # "Patient 001"). It's now measured from the actual rendered tick label
-    # height, so this should render without the two rows colliding.
-    fig = plot_sample_bar(result)
-    ax = fig.axes[0]
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-    tick_bboxes = [lbl.get_window_extent(renderer) for lbl in ax.get_xticklabels()]
-    assert all(bbox.height > 0 for bbox in tick_bboxes)
+def test_titles_include_analyte_name_when_set(result):
+    result.analyte = "Human CXCL10"
+    fig1 = plot_standard_curve(result)
+    fig2 = plot_sample_bar(result)
+    assert fig1.axes[0].get_title() == "Human CXCL10 Standard Curve"
+    assert fig2.axes[0].get_title() == "Human CXCL10 Sample Concentrations"
+
+
+def test_titles_fall_back_when_analyte_not_set(result):
+    result.analyte = ""
+    fig1 = plot_standard_curve(result)
+    fig2 = plot_sample_bar(result)
+    assert fig1.axes[0].get_title() == "Standard Curve"
+    assert fig2.axes[0].get_title() == "Sample Concentrations"

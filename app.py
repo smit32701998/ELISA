@@ -6,6 +6,7 @@ Run with:
     streamlit run app.py
 """
 import io
+import re
 import tempfile
 from pathlib import Path
 
@@ -39,6 +40,45 @@ st.caption(
     "4PL/5PL curve fitting with Prism-style charts. Upload your plate reader's raw "
     "OD export, describe the plate layout, and get back a full results report."
 )
+
+if "analyte" not in st.session_state:
+    st.session_state["analyte"] = ""
+if "analyte_prompted" not in st.session_state:
+    st.session_state["analyte_prompted"] = False
+
+
+@st.dialog("What is this ELISA measuring?")
+def _prompt_analyte():
+    st.write(
+        "Name the protein/analyte being measured -- it will be used as the title "
+        "on every chart and in the Excel report, so the output is always clearly "
+        "labeled with what it's showing."
+    )
+    name = st.text_input(
+        "Protein / analyte name", value=st.session_state["analyte"],
+        placeholder="e.g. Human IL-6, CXCL10",
+    )
+    col1, col2 = st.columns(2)
+    if col1.button("Continue", type="primary", width="stretch"):
+        st.session_state["analyte"] = name.strip()
+        st.session_state["analyte_prompted"] = True
+        st.rerun()
+    if col2.button("Skip for now", width="stretch"):
+        st.session_state["analyte_prompted"] = True
+        st.rerun()
+
+
+if not st.session_state["analyte_prompted"]:
+    _prompt_analyte()
+
+label_col, button_col = st.columns([5, 1])
+label_col.markdown(
+    f"**Measuring:** {st.session_state['analyte']}" if st.session_state["analyte"]
+    else "**Measuring:** _not set_"
+)
+if button_col.button("Set/edit"):
+    st.session_state["analyte_prompted"] = False
+    st.rerun()
 
 
 @st.cache_data(show_spinner=False)
@@ -209,7 +249,10 @@ if st.button("Run analysis", type="primary"):
         source_table=source_label, available_tables=list(all_tables.keys()),
     )
     try:
-        result = analyze(plate, model=model, weight_mode=weight, blank_subtract=blank_subtract, units=units)
+        result = analyze(
+            plate, model=model, weight_mode=weight, blank_subtract=blank_subtract,
+            units=units, analyte=st.session_state["analyte"],
+        )
     except ValueError as exc:
         st.error(str(exc))
         st.stop()
@@ -241,10 +284,14 @@ if st.button("Run analysis", type="primary"):
     with tempfile.TemporaryDirectory() as tmp:
         report_path = str(Path(tmp) / "report.xlsx")
         write_report(result, report_path, str(Path(tmp) / "plot"))
+        report_name = (
+            f"{re.sub(r'[^A-Za-z0-9]+', '_', result.analyte).strip('_')}_elisa_report.xlsx"
+            if result.analyte else "elisa_report.xlsx"
+        )
         with open(report_path, "rb") as f:
             st.download_button(
                 "Download full Excel report",
                 f.read(),
-                file_name="elisa_report.xlsx",
+                file_name=report_name,
                 type="primary",
             )

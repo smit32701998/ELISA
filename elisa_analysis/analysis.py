@@ -23,6 +23,7 @@ class AnalysisResult:
     units: str
     source_table: str = None
     available_tables: list = None
+    analyte: str = ""
 
 
 def _well_dataframe(plate: PlateData) -> pd.DataFrame:
@@ -70,6 +71,7 @@ def analyze(
     weight_mode: Literal["none", "1/y", "1/y2"] = "1/y2",
     blank_subtract: bool = True,
     units: str = "conc. units",
+    analyte: str = "",
 ) -> AnalysisResult:
     plate_df = _well_dataframe(plate)
     stats = _replicate_stats(plate_df)
@@ -205,4 +207,5 @@ def analyze(
         units=units,
         source_table=plate.source_table,
         available_tables=plate.available_tables,
+        analyte=analyte.strip(),
     )

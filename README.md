@@ -43,6 +43,11 @@ tables immediately — with buttons to download the full Excel report and to
 save your layout for reuse next time. This works with either the combined
 template or a native instrument export (see below); no command line needed.
 
+On load it asks what protein/analyte the ELISA is measuring (e.g. "Human
+IL-6"); that name is then used as the title on every chart and in the Excel
+report, so every output file is clearly labeled. Click "Set/edit" near the
+top of the page to change it later.
+
 ## Input workbook format
 
 Your Excel file needs four sheets. Run `python scripts/make_template.py`
@@ -86,6 +91,7 @@ Options:
 - `--model {4PL,5PL}` — logistic model to fit (default `4PL`)
 - `--weight {none,1/y,1/y2}` — regression weighting (default `1/y2`)
 - `--units` — concentration unit label used on axes/tables (default `conc. units`)
+- `--analyte` — protein/analyte name (e.g. `"Human CXCL10"`), used as the title on every chart and in the Excel report
 - `--no-blank-subtract` — skip background subtraction
 
 This writes `<name>_report.xlsx` (results tables + embedded charts) and two
