@@ -110,23 +110,30 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
             return fig
         return ax
 
-    samples = samples.sort_values("SampleName")
+    samples = samples.sort_values("SampleName").reset_index(drop=True)
     x_pos = np.arange(len(samples))
+
+    finite_mask = samples["FinalConc"].notna()
+    y_max = samples.loc[finite_mask, "FinalConc"].max() if finite_mask.any() else 1.0
+    # Samples with no calculable concentration (e.g. the instrument reported
+    # "OVER") still get a full-height bar rather than being silently omitted
+    # -- its label is written on the bar instead of a real value.
+    plot_heights = samples["FinalConc"].where(finite_mask, y_max)
 
     ax.bar(
         x_pos,
-        samples["FinalConc"],
+        plot_heights,
         width=0.6,
-        color="white",
+        color=PRISM_BLACK,
         edgecolor=PRISM_BLACK,
         linewidth=1.3,
         zorder=2,
     )
     err = samples["SD_OD"] / samples["MeanOD"].replace(0, np.nan) * samples["FinalConc"]
     ax.errorbar(
-        x_pos,
-        samples["FinalConc"],
-        yerr=err.fillna(0),
+        x_pos[finite_mask],
+        samples.loc[finite_mask, "FinalConc"],
+        yerr=err[finite_mask].fillna(0),
         fmt="none",
         ecolor=PRISM_BLACK,
         elinewidth=1.1,
@@ -140,18 +147,42 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
     ax.set_title(title, fontsize=13, fontfamily="sans-serif", fontweight="bold")
     _apply_prism_style(ax)
 
-    for i, flag in enumerate(samples["Flag"]):
-        if flag:
+    has_star = False
+    has_marker_bar = False
+    for i, row in samples.iterrows():
+        if not finite_mask.iloc[i]:
+            has_marker_bar = True
+            ax.text(
+                x_pos[i], plot_heights.iloc[i] * 0.5, row["Flag"] or "N/A",
+                ha="center", va="center", rotation=90, fontsize=10,
+                color="white", fontweight="bold", zorder=4,
+            )
+        elif row["Flag"]:
+            has_star = True
             ax.annotate(
                 "*",
-                (x_pos[i], samples["FinalConc"].iloc[i]),
+                (x_pos[i], row["FinalConc"]),
                 textcoords="offset points",
                 xytext=(0, 6),
                 ha="center",
                 fontsize=13,
                 color=PRISM_RED,
                 fontweight="bold",
+                zorder=4,
             )
+
+    key_lines = []
+    if has_star:
+        key_lines.append("*  flagged (outside calibrated range and/or CV > 15%)")
+    if has_marker_bar:
+        key_lines.append("full-height bar + label = instrument reported a non-numeric\nreading (e.g. OVER); no concentration could be calculated")
+    if key_lines:
+        ax.text(
+            0.02, 0.97, "\n".join(key_lines),
+            transform=ax.transAxes, fontsize=7.5, va="top", ha="left",
+            family="sans-serif", color=PRISM_BLACK,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#999999", linewidth=0.7),
+        )
 
     if own_fig:
         fig.tight_layout()

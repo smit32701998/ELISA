@@ -45,6 +45,7 @@ class Well:
     col: int
     label: Optional[str]
     od: Optional[float]
+    flag: Optional[str] = None  # instrument marker when od couldn't be parsed, e.g. "OVER"
 
 
 @dataclass
@@ -116,16 +117,22 @@ def _nearest_label_above(df: pd.DataFrame, header_row: int, search_back: int = 6
     return None
 
 
-def _cell_to_od(val) -> Optional[float]:
+def parse_od_cell(val) -> tuple:
+    """Split a raw OD cell into (numeric_value, marker). marker is None for a
+    normal number or a truly blank/unread well; for a non-numeric instrument
+    reading (e.g. Tecan's "OVER" on a saturated well) numeric_value is None
+    and marker carries the original text so it isn't silently discarded."""
     if val is None:
-        return None
+        return None, None
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return (None, None) if np.isnan(val) else (float(val), None)
     text = str(val).strip()
     if text == "" or text.lower() == "nan":
-        return None
+        return None, None
     try:
-        return float(text)
+        return float(text), None
     except ValueError:
-        return None  # e.g. "OVER"/saturation markers from the instrument
+        return None, text.upper()
 
 
 def _read_grid_at(df: pd.DataFrame, header_row: int, header_col: int) -> dict:
@@ -142,7 +149,8 @@ def _read_grid_at(df: pd.DataFrame, header_row: int, header_col: int) -> dict:
 def extract_od_tables(path: str, sheet_name: Optional[str] = None) -> dict:
     """Find every 8x12 OD grid in the workbook (optionally restricted to one
     sheet), keyed by a human-readable label (nearby heading text, or a
-    generic fallback). Cell values are returned as raw floats/None."""
+    generic fallback). Cell values are returned as-read (float/str/None) --
+    use parse_od_cell to split a value into (numeric, marker)."""
     sheets = pd.read_excel(path, sheet_name=sheet_name, header=None)
     if isinstance(sheets, pd.DataFrame):
         sheets = {sheet_name or 0: sheets}
@@ -156,8 +164,7 @@ def extract_od_tables(path: str, sheet_name: Optional[str] = None) -> dict:
         for idx, (r, c) in enumerate(origins):
             label = _nearest_label_above(df, r) or f"{sname} Table {idx + 1}"
             label = str(label).strip()
-            raw_grid = _read_grid_at(df, r, c)
-            grid = {wid: _cell_to_od(v) for wid, v in raw_grid.items()}
+            grid = _read_grid_at(df, r, c)
             if label in tables:
                 label = f"{label} ({sname}#{idx + 1})"
             tables[label] = grid
@@ -193,10 +200,14 @@ def select_od_table(tables: dict, table: Optional[str] = None):
     if ref_matches and non_ref:
         primary_label, ref_label = non_ref[0], ref_matches[0]
         primary, ref = tables[primary_label], tables[ref_label]
-        computed = {
-            wid: (primary[wid] - ref[wid]) if primary.get(wid) is not None and ref.get(wid) is not None else None
-            for wid in primary
-        }
+        computed = {}
+        for wid, praw in primary.items():
+            p_val, p_marker = parse_od_cell(praw)
+            if p_marker is not None:
+                computed[wid] = p_marker  # e.g. "OVER" on the primary read -- still saturated
+                continue
+            r_val, _ = parse_od_cell(ref.get(wid))
+            computed[wid] = (p_val - r_val) if p_val is not None and r_val is not None else None
         return f"{primary_label} minus {ref_label} (computed)", computed
 
     first_label = next(iter(tables))
@@ -294,7 +305,8 @@ def build_plate_data(
             label = label_grid.get(wid)
             label = str(label).strip() if label is not None and str(label).strip().lower() != "nan" else None
             label = label or None
-            wells.append(Well(wid, row_letter, col_num, label, od_grid.get(wid)))
+            od_val, od_marker = parse_od_cell(od_grid.get(wid))
+            wells.append(Well(wid, row_letter, col_num, label, od_val, od_marker))
     return PlateData(
         wells=wells,
         standards=standards,

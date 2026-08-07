@@ -27,7 +27,7 @@ class AnalysisResult:
 
 def _well_dataframe(plate: PlateData) -> pd.DataFrame:
     rows = [
-        {"Well": w.well_id, "Row": w.row, "Col": w.col, "Label": w.label, "OD": w.od}
+        {"Well": w.well_id, "Row": w.row, "Col": w.col, "Label": w.label, "OD": w.od, "RawFlag": w.flag}
         for w in plate.wells
     ]
     return pd.DataFrame(rows)
@@ -43,6 +43,27 @@ def _replicate_stats(df: pd.DataFrame) -> pd.DataFrame:
     return stats
 
 
+def _label_markers(plate_df: pd.DataFrame) -> dict:
+    """label -> sorted distinct non-numeric instrument markers (e.g. ["OVER"])
+    seen among its wells, so a saturated/error reading isn't silently dropped."""
+    out = {}
+    for label, group in plate_df.dropna(subset=["Label"]).groupby("Label"):
+        markers = sorted({m for m in group["RawFlag"] if isinstance(m, str) and m})
+        if markers:
+            out[label] = markers
+    return out
+
+
+def _flag_text(pct_cv, markers, all_missing) -> str:
+    flags = []
+    if markers:
+        marker_str = "/".join(markers)
+        flags.append(marker_str if all_missing else f"{marker_str} (partial)")
+    if pd.notna(pct_cv) and pct_cv > CV_WARN_THRESHOLD:
+        flags.append(f"CV>{CV_WARN_THRESHOLD:.0f}%")
+    return ", ".join(flags)
+
+
 def analyze(
     plate: PlateData,
     model: Literal["4PL", "5PL"] = "4PL",
@@ -52,6 +73,7 @@ def analyze(
 ) -> AnalysisResult:
     plate_df = _well_dataframe(plate)
     stats = _replicate_stats(plate_df)
+    label_markers = _label_markers(plate_df)
 
     blank_labels = {lbl.upper() for lbl in BLANK_LABELS}
     std_labels = set(plate.standards["Label"])
@@ -88,9 +110,10 @@ def analyze(
             np.nan,
         )
     std_stats = std_stats.sort_values("Concentration").reset_index(drop=True)
-    std_stats["Flag"] = np.where(
-        std_stats["PctCV"] > CV_WARN_THRESHOLD, f"CV>{CV_WARN_THRESHOLD:.0f}%", ""
-    )
+    std_stats["Flag"] = [
+        _flag_text(row["PctCV"], label_markers.get(row["Label"], []), pd.isna(row["MeanOD"]))
+        for _, row in std_stats.iterrows()
+    ]
 
     # --- Samples ---
     pos_concs = plate.standards.loc[plate.standards["Concentration"] > 0, "Concentration"]
@@ -103,13 +126,9 @@ def analyze(
         if label.upper() in blank_labels:
             continue
         row_stats = stats[stats["Label"] == label]
-        if row_stats.empty:
-            continue
-        mean_od = float(row_stats["MeanOD"].iloc[0])
-        sd_od = float(row_stats["SD_OD"].iloc[0])
-        n = int(row_stats["N"].iloc[0])
-        pct_cv = row_stats["PctCV"].iloc[0]
-        corrected_od = mean_od - blank_od_used
+        markers = label_markers.get(label, [])
+        if row_stats.empty and not markers:
+            continue  # no numeric data and no instrument marker -- nothing to report
 
         if label in getattr(sample_info, "index", []):
             sample_name = sample_info.loc[label, "SampleName"]
@@ -117,6 +136,32 @@ def analyze(
         else:
             sample_name = label
             dilution = 1.0
+
+        if row_stats.empty:
+            # every replicate for this label was a non-numeric instrument
+            # reading (e.g. "OVER") -- report it instead of dropping it.
+            sample_rows.append(
+                {
+                    "Label": label,
+                    "SampleName": sample_name,
+                    "N": 0,
+                    "MeanOD": np.nan,
+                    "SD_OD": np.nan,
+                    "PctCV": np.nan,
+                    "CorrectedOD": np.nan,
+                    "Dilution": dilution,
+                    "InterpolatedConc": np.nan,
+                    "FinalConc": np.nan,
+                    "Flag": _flag_text(np.nan, markers, True),
+                }
+            )
+            continue
+
+        mean_od = float(row_stats["MeanOD"].iloc[0])
+        sd_od = float(row_stats["SD_OD"].iloc[0])
+        n = int(row_stats["N"].iloc[0])
+        pct_cv = row_stats["PctCV"].iloc[0]
+        corrected_od = mean_od - blank_od_used
 
         interp_conc = float(fit.concentration_at(np.array([corrected_od]))[0])
         final_conc = interp_conc * dilution if np.isfinite(interp_conc) else np.nan
@@ -130,8 +175,9 @@ def analyze(
         flags = []
         if response_out_of_range or conc_out_of_range:
             flags.append("OOR")
-        if np.isfinite(pct_cv) and pct_cv > CV_WARN_THRESHOLD:
-            flags.append(f"CV>{CV_WARN_THRESHOLD:.0f}%")
+        marker_flag = _flag_text(pct_cv, markers, False)
+        if marker_flag:
+            flags.append(marker_flag)
 
         sample_rows.append(
             {
