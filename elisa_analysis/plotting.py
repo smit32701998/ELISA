@@ -141,15 +141,14 @@ def plot_sample_bar(result: AnalysisResult, title: str = None, ax=None):
     x_pos = np.arange(len(samples))
 
     finite_mask = samples["FinalConc"].notna()
-    y_max = samples.loc[finite_mask, "FinalConc"].max() if finite_mask.any() else 1.0
     # Samples with no calculable concentration (e.g. the instrument reported
-    # "OVER") still get a full-height bar rather than being silently omitted
-    # -- its label is written on the bar instead of a real value.
-    plot_heights = samples["FinalConc"].where(finite_mask, y_max)
-
+    # "OVER") get no bar at all -- a full-height placeholder bar, even
+    # labeled, reads at a glance like a real value and can be misleading.
+    # No bar (just its x-axis tick + a small label, added below) is the
+    # unambiguous way to show "no data here".
     ax.bar(
-        x_pos,
-        plot_heights,
+        x_pos[finite_mask],
+        samples.loc[finite_mask, "FinalConc"],
         width=0.6,
         color=PRISM_BLACK,
         edgecolor=PRISM_BLACK,
@@ -175,14 +174,14 @@ def plot_sample_bar(result: AnalysisResult, title: str = None, ax=None):
     _apply_prism_style(ax)
 
     has_star = False
-    has_marker_bar = False
+    has_no_data_label = False
     for i, row in samples.iterrows():
         if not finite_mask.iloc[i]:
-            has_marker_bar = True
+            has_no_data_label = True
             ax.text(
-                x_pos[i], plot_heights.iloc[i] * 0.5, row["Flag"] or "N/A",
-                ha="center", va="center", rotation=90, fontsize=10,
-                color="white", fontweight="bold", zorder=4,
+                x_pos[i], 0, f" {row['Flag'] or 'N/A'} ",
+                ha="center", va="bottom", rotation=90, fontsize=8.5,
+                color=PRISM_RED, fontweight="bold", zorder=4,
             )
         elif row["Flag"]:
             has_star = True
@@ -203,8 +202,8 @@ def plot_sample_bar(result: AnalysisResult, title: str = None, ax=None):
     key_lines = []
     if has_star:
         key_lines.append("*  flagged (outside calibrated range and/or CV > 15%)")
-    if has_marker_bar:
-        key_lines.append("full-height bar + label = instrument reported a non-numeric\nreading (e.g. OVER); no concentration could be calculated")
+    if has_no_data_label:
+        key_lines.append("no bar (label only) = instrument reported a non-numeric\nreading (e.g. OVER); no concentration could be calculated")
     if key_lines:
         ax.text(
             0.02, 0.97, "\n".join(key_lines),
