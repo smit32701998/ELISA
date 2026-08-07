@@ -69,3 +69,33 @@ def test_partially_saturated_sample_uses_valid_replicate_and_flags_partial():
     assert row["N"] == 1  # only the numeric replicate counted
     assert row["MeanOD"] == pytest.approx(0.4)
     assert "OVER" in row["Flag"] and "partial" in row["Flag"]
+
+
+def test_response_beyond_fitted_plateau_gets_a_censored_bound_not_nan():
+    # A sample can have a perfectly real, measured OD that still sits beyond
+    # the *fitted* curve's asymptote (noise, or truly more concentrated than
+    # any standard) -- concentration_at() can't solve the inverse there (it
+    # would need a negative number to a fractional power) and returns NaN.
+    # That NaN previously got treated the same as a genuine "instrument
+    # can't read this well" case (od=None), rendering as an unreadable
+    # full-height marker bar. It should instead report a finite, honest
+    # bound (e.g. "> highest standard") and plot as a normal bar.
+    rows = list("ABCDEFGH")
+    concs = [100, 50, 25, 12.5, 6.25, 3.125, 1.5625, 0]
+    label_grid, od_grid = {}, {}
+    for i, row in enumerate(rows):
+        label_grid[f"{row}1"] = f"STD{i + 1}"
+        c = concs[i]
+        od_grid[f"{row}1"] = 0.05 + 2.95 * (c**1.2) / (20**1.2 + c**1.2) if c > 0 else 0.05
+    label_grid["A2"] = "UNK1"
+    od_grid["A2"] = 3.5  # above the fitted plateau (~2.95) -- impossible under the model
+
+    standards = pd.DataFrame({"Label": [f"STD{i + 1}" for i in range(8)], "Concentration": concs})
+    samples = pd.DataFrame({"Label": ["UNK1"], "SampleName": ["Above plateau"], "Dilution": [1.0]})
+    plate = build_plate_data(od_grid, label_grid, standards, samples)
+
+    result = analyze(plate, model="4PL", weight_mode="none")
+    row = result.samples_table.set_index("Label").loc["UNK1"]
+    assert np.isfinite(row["FinalConc"])
+    assert row["FinalConc"] == pytest.approx(100.0)  # bounded at the highest standard
+    assert row["Flag"] == "OOR (>100)"

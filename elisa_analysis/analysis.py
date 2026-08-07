@@ -120,6 +120,17 @@ def analyze(
     # --- Samples ---
     pos_concs = plate.standards.loc[plate.standards["Concentration"] > 0, "Concentration"]
     std_conc_lo, std_conc_hi = float(pos_concs.min()), float(pos_concs.max())
+    # A response beyond the fit's asymptote has no real solution for the
+    # inverse formula (it would require a negative number raised to a
+    # fractional power) -- concentration_at() returns NaN for those. That's
+    # mathematically correct (the curve can never produce that response at
+    # any finite concentration) but useless for reporting: comparing the
+    # response to what the highest/lowest *tested* standard itself predicts
+    # tells us which side it's beyond, so we can report a censored bound
+    # ("> highest standard" / "< lowest standard") instead of a blank value.
+    resp_at_std_hi = float(fit.response_at(np.array([std_conc_hi]))[0])
+    resp_at_std_lo = float(fit.response_at(np.array([std_conc_lo]))[0])
+    assay_increasing = resp_at_std_hi >= resp_at_std_lo
 
     non_std_labels = set(plate_df["Label"].dropna().unique()) - std_labels - blank_labels
     sample_info = plate.samples.set_index("Label") if not plate.samples.empty else pd.DataFrame()
@@ -166,17 +177,24 @@ def analyze(
         corrected_od = mean_od - blank_od_used
 
         interp_conc = float(fit.concentration_at(np.array([corrected_od]))[0])
+        bound_note = None
+        if not np.isfinite(interp_conc):
+            above_hi = corrected_od >= resp_at_std_hi if assay_increasing else corrected_od <= resp_at_std_hi
+            if above_hi:
+                interp_conc, bound_note = std_conc_hi, f">{std_conc_hi:g}"
+            else:
+                interp_conc, bound_note = std_conc_lo, f"<{std_conc_lo:g}"
         final_conc = interp_conc * dilution if np.isfinite(interp_conc) else np.nan
 
         lo, hi = fit.valid_response_range()
         response_out_of_range = not (min(lo, hi) <= corrected_od <= max(lo, hi))
-        conc_out_of_range = not np.isfinite(interp_conc) or not (
+        conc_out_of_range = bound_note is not None or not (
             std_conc_lo <= interp_conc <= std_conc_hi
         )
 
         flags = []
         if response_out_of_range or conc_out_of_range:
-            flags.append("OOR")
+            flags.append(f"OOR ({bound_note})" if bound_note else "OOR")
         marker_flag = _flag_text(pct_cv, markers, False)
         if marker_flag:
             flags.append(marker_flag)
