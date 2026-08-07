@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elisa-analysis"
+version = "0.1.0"
+description = "96-well ELISA raw-data analysis: 4PL/5PL curve fitting with Prism-style reports"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "matplotlib>=3.7",
+]
+
+[project.scripts]
+elisa-analyze = "elisa_analysis.cli:main"
+
+[tool.setuptools]
+packages = ["elisa_analysis"]
