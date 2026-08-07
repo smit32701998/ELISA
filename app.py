@@ -21,6 +21,7 @@ from elisa_analysis.io_utils import (
     default_samples_dataframe,
     default_standards_dataframe,
     detect_raw_data_sheet,
+    extract_embedded_plate_map,
     extract_od_tables,
     layout_grid_to_dataframe,
     normalize_samples_df,
@@ -99,6 +100,11 @@ def _try_read_combined_layout(file_bytes: bytes):
         return None
 
 
+@st.cache_data(show_spinner=False)
+def _try_read_embedded_plate_map(file_bytes: bytes):
+    return extract_embedded_plate_map(io.BytesIO(file_bytes))
+
+
 st.header("1. Raw data")
 raw_file = st.file_uploader(
     "Upload your plate reader's raw-data export (.xlsx) -- a native instrument "
@@ -156,12 +162,20 @@ st.success(
 )
 
 combined_layout = _try_read_combined_layout(raw_bytes)
+embedded_plate_map = _try_read_embedded_plate_map(raw_bytes) if combined_layout is None else None
 
 st.header("2. Assay layout")
 st.caption(
     "Which wells are standards/samples, their concentrations, and dilution factors. "
     "Edit the grids below, or upload a previously saved layout workbook to reuse it."
 )
+
+if embedded_plate_map is not None:
+    st.success(
+        "Detected a PLATE MAP / DILUTION MAP annotation in your file -- the layout below "
+        "was filled in automatically. Double-check it, then jump to **3. Options** and "
+        "click **Run analysis**; nothing else to fill in."
+    )
 
 layout_file = st.file_uploader(
     "Optional: upload a saved layout workbook (.xlsx)", type=["xlsx"], key="layout_upload"
@@ -170,6 +184,11 @@ layout_file = st.file_uploader(
 if "label_grid_df" not in st.session_state:
     if combined_layout is not None:
         label_grid0, std0, smp0 = combined_layout
+        st.session_state["label_grid_df"] = layout_grid_to_dataframe(label_grid0)
+        st.session_state["standards_df"] = std0 if not std0.empty else default_standards_dataframe()
+        st.session_state["samples_df"] = smp0 if not smp0.empty else default_samples_dataframe()
+    elif embedded_plate_map is not None:
+        label_grid0, std0, smp0 = embedded_plate_map
         st.session_state["label_grid_df"] = layout_grid_to_dataframe(label_grid0)
         st.session_state["standards_df"] = std0 if not std0.empty else default_standards_dataframe()
         st.session_state["samples_df"] = smp0 if not smp0.empty else default_samples_dataframe()

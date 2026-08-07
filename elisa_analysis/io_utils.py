@@ -1,6 +1,6 @@
 """Reading raw 96-well ELISA data + plate layout from Excel workbook(s).
 
-Two input modes are supported:
+Three input modes are supported:
 
 1. **Combined template** (see scripts/make_template.py / examples/example_raw_data.xlsx):
    a single workbook with "Raw Data", "Plate Layout", "Standards", and
@@ -8,13 +8,21 @@ Two input modes are supported:
    physical plate (or a two-column table for Standards/Samples). Use
    `load_plate(raw_path)` with no `layout_path`.
 
-2. **Native instrument export + reusable layout** (e.g. a Tecan Spark /
-   SparkControl "Result sheet" .xlsx exported straight from the reader):
-   the raw OD grid is read directly from the instrument's own export, and
-   the assay layout (which wells are standards/samples, their
-   concentrations/dilutions) comes from a separate small workbook built
-   from scripts/make_layout_template.py -- typically reused across many
-   runs of the same kit. Use `load_plate(raw_path, layout_path=...)`.
+2. **Annotated raw export** (see scripts/make_annotated_tecan_example.py):
+   some labs hand-annotate their raw instrument export with a "PLATE MAP"
+   and "DILUTION MAP" alongside the OD grid before analyzing it. When
+   these headers are found, `load_plate(raw_path)` parses them directly --
+   no separate layout file or manual entry needed at all. See
+   `extract_embedded_plate_map` for the exact convention expected.
+
+3. **Native instrument export + reusable layout** (e.g. a Tecan Spark /
+   SparkControl "Result sheet" .xlsx exported straight from the reader,
+   with no annotation): the raw OD grid is read directly from the
+   instrument's own export, and the assay layout (which wells are
+   standards/samples, their concentrations/dilutions) comes from a
+   separate small workbook built from scripts/make_layout_template.py --
+   typically reused across many runs of the same kit. Use
+   `load_plate(raw_path, layout_path=...)`.
 
 Instrument exports often contain more than one 8x12 grid per sheet (e.g. a
 raw absorbance table, a reference-wavelength table, and a blank/reference
@@ -26,6 +34,7 @@ difference itself if only raw + reference tables are found.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -287,6 +296,151 @@ def read_layout_workbook(source) -> tuple:
     return label_grid, std_df, samples_df
 
 
+_STD_LABEL_RE = re.compile(r"(?i)\bstd\.?\s*([\d]*\.?[\d]+)\b")
+_DILUTION_RATIO_RE = re.compile(r"^\s*([\d.]+)\s*/\s*([\d.]+)\s*$")
+_TOTAL_VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*u?l", re.IGNORECASE)
+
+
+def _find_cell_containing(df: pd.DataFrame, needle: str):
+    needle = needle.upper()
+    n_rows, n_cols = df.shape
+    for r in range(n_rows):
+        for c in range(n_cols):
+            val = df.iat[r, c]
+            if val is not None and needle in str(val).strip().upper():
+                return r, c
+    return None
+
+
+def _annotation_column_block(df: pd.DataFrame, header_row: int, start_col: int, stop_col: Optional[int] = None, n_rows: int = 8):
+    """Columns starting at start_col holding at least one non-empty value in
+    the n_rows rows beneath header_row, stopping at the first fully-empty
+    column (or at stop_col, exclusive)."""
+    cols = []
+    max_col = (stop_col - 1) if stop_col is not None else df.shape[1] - 1
+    c = start_col
+    while c <= max_col:
+        has_value = any(
+            df.iat[header_row + i, c] is not None and str(df.iat[header_row + i, c]).strip() not in ("", "nan")
+            for i in range(1, n_rows + 1)
+            if header_row + i < df.shape[0]
+        )
+        if not has_value:
+            break
+        cols.append(c)
+        c += 1
+    return cols
+
+
+def _classify_annotation_cell(val):
+    """Split a PLATE MAP well entry into ("blank"|"standard"|"sample", payload)."""
+    if val is None:
+        return None, None
+    text = str(val).strip()
+    if text == "" or text.lower() == "nan":
+        return None, None
+    if text.upper() in BLANK_LABELS or text.upper() == "BLANK":
+        return "blank", None
+    m = _STD_LABEL_RE.search(text)
+    if m:
+        return "standard", float(m.group(1))
+    return "sample", text
+
+
+def extract_embedded_plate_map(source) -> Optional[tuple]:
+    """Detect a hand-added "PLATE MAP" (+ optional "DILUTION MAP") annotation
+    placed next to the raw OD grid, as some labs add before analyzing --
+    letting a single uploaded file fully describe the assay with no separate
+    layout workbook or manual grid entry.
+
+    Convention (inferred from a real annotated export): a "PLATE MAP" header
+    cell sits on the same row as one of the OD grid's own column-header
+    rows; the 8 rows beneath it (A-H) hold, one column per physical plate
+    column in left-to-right order starting at column 1: a standard's label
+    ("Std 1000"), the word BLANK, or a free-text sample name. An optional,
+    similarly-shaped "DILUTION MAP" block index-aligned with it gives a
+    "sample/diluent" ratio (e.g. "10.0/90.0" out of a stated total volume,
+    parsed from the header text, defaulting to 100) for the same wells --
+    any column in that block that isn't ratio-shaped (e.g. a copy-pasted
+    label used just for visual alignment) is ignored.
+
+    Returns (label_grid, standards_df, samples_df), or None if no "PLATE
+    MAP" header is found anywhere in the workbook.
+    """
+    sheets = pd.read_excel(source, sheet_name=None, header=None)
+    for _, df in sheets.items():
+        pm_pos = _find_cell_containing(df, "PLATE MAP")
+        if pm_pos is None:
+            continue
+        pm_row, pm_col = pm_pos
+
+        dm_pos = _find_cell_containing(df, "DILUTION MAP")
+        total_volume = 100.0
+        if dm_pos is not None:
+            header_text = str(df.iat[dm_pos])
+            m = _TOTAL_VOLUME_RE.search(header_text)
+            if m:
+                total_volume = float(m.group(1))
+
+        pm_stop = dm_pos[1] if dm_pos is not None and dm_pos[0] == pm_row else None
+        pm_cols = _annotation_column_block(df, pm_row, pm_col, stop_col=pm_stop)
+        dm_cols = _annotation_column_block(df, dm_pos[0], dm_pos[1]) if dm_pos is not None else []
+
+        label_grid = {}
+        standards: dict = {}
+        sample_label_by_text: dict = {}
+        samples: dict = {}
+        sample_counter = 1
+
+        for i, col in enumerate(pm_cols):
+            plate_col = i + 1
+            dm_col = dm_cols[i] if i < len(dm_cols) else None
+            for row_idx, row_letter in enumerate(ROWS):
+                r = pm_row + 1 + row_idx
+                if r >= df.shape[0]:
+                    continue
+                kind, payload = _classify_annotation_cell(df.iat[r, col])
+                if kind is None:
+                    continue
+                wid = f"{row_letter}{plate_col}"
+                if kind == "blank":
+                    label_grid[wid] = "BLANK"
+                elif kind == "standard":
+                    label = f"STD_{payload:g}"
+                    label_grid[wid] = label
+                    standards[label] = payload
+                else:
+                    text = payload
+                    if text not in sample_label_by_text:
+                        sample_label_by_text[text] = f"S{sample_counter:02d}"
+                        sample_counter += 1
+                    label = sample_label_by_text[text]
+                    label_grid[wid] = label
+                    if label not in samples:
+                        dilution = 1.0
+                        if dm_col is not None and r < df.shape[0]:
+                            dm_val = df.iat[r, dm_col]
+                            dm_text = str(dm_val).strip() if dm_val is not None else ""
+                            ratio_match = _DILUTION_RATIO_RE.match(dm_text)
+                            if ratio_match:
+                                sample_part = float(ratio_match.group(1))
+                                if sample_part > 0:
+                                    dilution = total_volume / sample_part
+                        samples[label] = (text, dilution)
+
+        if not label_grid:
+            continue
+
+        standards_df = pd.DataFrame(
+            {"Label": list(standards.keys()), "Concentration": list(standards.values())}
+        )
+        samples_df = pd.DataFrame(
+            [{"Label": k, "SampleName": v[0], "Dilution": v[1]} for k, v in samples.items()]
+        )
+        return label_grid, standards_df, samples_df
+    return None
+
+
 def build_plate_data(
     od_grid: dict,
     label_grid: dict,
@@ -319,24 +473,31 @@ def build_plate_data(
 def load_plate(raw_path: str, layout_path: Optional[str] = None, table: Optional[str] = None) -> PlateData:
     """Load raw OD data + assay layout into a PlateData.
 
-    If layout_path is omitted, raw_path must be a combined single-workbook
-    template containing "Raw Data", "Plate Layout", and "Standards" sheets
-    (plus optional "Samples"). If layout_path is given, raw_path can be any
-    file with one or more embedded 8x12 OD grids (e.g. a native Tecan Spark
-    / SparkControl export), and the layout/standards/samples come from
-    layout_path instead.
+    If layout_path is omitted, raw_path is tried, in order, as: (1) a
+    combined single-workbook template containing "Raw Data", "Plate
+    Layout", and "Standards" sheets (plus optional "Samples"); (2) a raw
+    instrument export annotated with an embedded "PLATE MAP" (see
+    extract_embedded_plate_map) needing no separate layout at all. If
+    layout_path is given, raw_path can be any file with one or more
+    embedded 8x12 OD grids (e.g. a native Tecan Spark / SparkControl
+    export), and the layout/standards/samples come from layout_path instead.
     """
     if layout_path is None:
         raw_sheets = pd.read_excel(raw_path, sheet_name=None, header=None)
         raw_name = _sheet_name(raw_sheets, "Raw Data", "RawData", "Data", "OD")
-        if raw_name is None:
-            raise ValueError(
-                "Workbook is missing a 'Raw Data' sheet with the 8x12 plate grid of OD readings. "
-                "If this is a native instrument export, pass layout_path= pointing at a separate "
-                "layout workbook instead."
-            )
-        all_tables = extract_od_tables(raw_path, sheet_name=raw_name)
-        label_grid, std_df, samples_df = read_layout_workbook(raw_path)
+        if raw_name is not None:
+            all_tables = extract_od_tables(raw_path, sheet_name=raw_name)
+            label_grid, std_df, samples_df = read_layout_workbook(raw_path)
+        else:
+            embedded = extract_embedded_plate_map(raw_path)
+            if embedded is None:
+                raise ValueError(
+                    "Workbook is missing a 'Raw Data' sheet with the 8x12 plate grid of OD readings, "
+                    "and no embedded 'PLATE MAP' annotation was found either. If this is a native "
+                    "instrument export, pass layout_path= pointing at a separate layout workbook instead."
+                )
+            label_grid, std_df, samples_df = embedded
+            all_tables = extract_od_tables(raw_path)
     else:
         all_tables = extract_od_tables(raw_path)
         label_grid, std_df, samples_df = read_layout_workbook(layout_path)

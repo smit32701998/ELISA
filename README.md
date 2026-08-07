@@ -141,6 +141,38 @@ This importer looks for any 8x12 grid (column headers `1..12`, row headers
 — other readers that export a similarly shaped grid (with or without a
 metadata header block above it) should load the same way.
 
+## Annotating a raw export yourself (no layout file at all)
+
+If you already hand-annotate your raw export with a plate map before
+analyzing it, you don't need a separate layout workbook, or even the
+`--layout` flag — just point `--input` (or, in the web app, the upload box)
+at that one file:
+
+```bash
+python -m elisa_analysis.cli --input my_annotated_export.xlsx --output-dir results
+```
+
+Add a `PLATE MAP` header cell anywhere in the sheet, and (optionally) a
+`DILUTION MAP` header cell next to it. Beneath each header, across the same
+8 rows (A–H) as your OD grid, one column per physical plate column in order
+starting at column 1:
+- a standard's concentration, written as `Std <number>` (e.g. `Std 1000`, `Std 62.5`)
+- `BLANK` for a background/blank well
+- anything else is treated as a sample name — repeat the exact same text in
+  another well to mark it as a replicate of that sample
+
+Under `DILUTION MAP`, give each sample well a `<sample>/<diluent>` ratio
+(e.g. `10.0/90.0`) — the dilution factor is computed as (total volume) ÷
+(sample part); mention the total volume in the header text (e.g. "total 100
+uL") or it defaults to 100. Columns that aren't ratio-shaped (e.g. one kept
+just for visual alignment) are ignored.
+
+`scripts/make_annotated_tecan_example.py` generates a synthetic example of
+this (`examples/tecan_annotated_example.xlsx`) if you want to see the exact
+shape expected before trying it on a real file. In the web app, uploading a
+file like this auto-fills the plate layout, standards, and samples for you
+— check it over, then go straight to "Run analysis".
+
 ## Try it with the bundled example
 
 ```bash
