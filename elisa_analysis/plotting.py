@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import matplotlib.transforms as mtransforms
 import pandas as pd
 
 from .analysis import AnalysisResult
@@ -141,11 +142,27 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
         zorder=3,
     )
 
+    def _fmt_dilution(d):
+        return f"×{int(d)}" if float(d).is_integer() else f"×{d:.3g}"
+
     ax.set_xticks(x_pos)
     ax.set_xticklabels(samples["SampleName"], rotation=45, ha="right", fontsize=9)
     ax.set_ylabel(f"Concentration ({result.units})", fontsize=12, fontfamily="sans-serif")
     ax.set_title(title, fontsize=13, fontfamily="sans-serif", fontweight="bold")
     _apply_prism_style(ax)
+
+    # Dilution factor gets its own row of labels below the sample names --
+    # a single rotated multi-line tick label renders with the lines
+    # overlapping, so this is a second, independently-positioned annotation.
+    dilution_trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+    for i, dil in enumerate(samples["Dilution"]):
+        ax.annotate(
+            _fmt_dilution(dil),
+            xy=(x_pos[i], 0), xycoords=dilution_trans,
+            xytext=(0, -48), textcoords="offset points",
+            ha="right", va="top", fontsize=8, color="#555555",
+            rotation=45, rotation_mode="anchor",
+        )
 
     has_star = False
     has_marker_bar = False
@@ -171,7 +188,7 @@ def plot_sample_bar(result: AnalysisResult, title: str = "Sample Concentrations"
                 zorder=4,
             )
 
-    key_lines = []
+    key_lines = ["×N below sample name = dilution factor; bar height = interpolated conc. × dilution"]
     if has_star:
         key_lines.append("*  flagged (outside calibrated range and/or CV > 15%)")
     if has_marker_bar:

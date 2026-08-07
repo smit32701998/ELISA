@@ -1,6 +1,7 @@
 """Write a formatted Excel report (results tables + embedded Prism-style charts)."""
 from __future__ import annotations
 
+import pandas as pd
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -29,7 +30,9 @@ def _write_df(ws, df, start_row=1, number_formats=None):
                 if col_name in number_formats:
                     cell.number_format = number_formats[col_name]
     for c_idx, col in enumerate(df.columns, start=1):
-        width = max(12, min(28, int(df[col].astype(str).str.len().max() or 10) + 4))
+        max_len = df[col].astype(str).str.len().max()
+        max_len = 10 if pd.isna(max_len) else max_len
+        width = max(12, min(28, int(max_len) + 4))
         ws.column_dimensions[get_column_letter(c_idx)].width = width
     return start_row + len(df) + 1
 
