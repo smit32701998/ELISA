@@ -65,6 +65,8 @@ def main(argv=None) -> int:
 
     print(f"Model: {result.fit.model}   R^2 = {result.fit.r_squared:.5f}")
     print(f"Parameters: {result.fit.params}")
+    for w in result.fit.warnings:
+        print(f"WARNING: {w}")
     print(f"Report written to {report_path}")
     if not result.samples_table.empty:
         n_flagged = (result.samples_table["Flag"] != "").sum()

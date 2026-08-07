@@ -60,6 +60,15 @@ def write_report(result: AnalysisResult, out_path: str, plot_prefix: str) -> str
         ws_sum.cell(row=row, column=1, value=name)
         ws_sum.cell(row=row, column=2, value=round(float(value), 6))
         row += 1
+    if result.fit.warnings:
+        row += 1
+        ws_sum.cell(row=row, column=1, value="FIT WARNINGS").font = Font(color="CC0000", bold=True)
+        row += 1
+        for w in result.fit.warnings:
+            ws_sum.cell(row=row, column=1, value=w).font = Font(color="CC0000")
+            ws_sum.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+            ws_sum.row_dimensions[row].height = 45
+            row += 1
     ws_sum.column_dimensions["A"].width = 22
     ws_sum.column_dimensions["B"].width = 18
 

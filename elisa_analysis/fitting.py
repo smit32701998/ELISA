@@ -62,6 +62,7 @@ class FitResult:
     weights: Optional[np.ndarray]
     predict: Callable[[np.ndarray], np.ndarray] = field(repr=False)
     invert: Callable[[np.ndarray], np.ndarray] = field(repr=False)
+    warnings: list = field(default_factory=list)
 
     def concentration_at(self, response: np.ndarray) -> np.ndarray:
         return self.invert(response)
@@ -118,19 +119,37 @@ def fit_curve(
     else:
         raise ValueError(f"Unknown weight_mode: {weight_mode}")
 
+    # Generous but finite bounds on the asymptotes (A/D) and EC50 (C) keep the
+    # optimizer from diverging to non-physical values when the data don't
+    # reach one of the plateaus (e.g. a saturated/excluded top standard) --
+    # without them, a 4PL/5PL can trade off C against D and still fit the
+    # rising limb almost perfectly while landing on meaningless parameters.
+    y_span = max(float(np.ptp(yf)), 1e-6)
+    y_lo, y_hi = float(np.min(yf)), float(np.max(yf))
+    x_lo, x_hi = float(np.min(xf)), float(np.max(xf))
+    asym_bounds = (y_lo - 5 * y_span, y_hi + 5 * y_span)
+    c_bounds = (x_lo / 50.0, x_hi * 50.0)
+    b_bounds = (-50.0, 50.0)
+
     if model == "4PL":
         func = logistic_4pl
         p0 = _initial_guess_4pl(xf, yf)
         param_names = ["A", "B", "C", "D"]
+        lower = [asym_bounds[0], b_bounds[0], c_bounds[0], asym_bounds[0]]
+        upper = [asym_bounds[1], b_bounds[1], c_bounds[1], asym_bounds[1]]
     elif model == "5PL":
         func = logistic_5pl
         p0 = _initial_guess_5pl(xf, yf)
         param_names = ["A", "B", "C", "D", "E"]
+        lower = [asym_bounds[0], b_bounds[0], c_bounds[0], asym_bounds[0], 0.05]
+        upper = [asym_bounds[1], b_bounds[1], c_bounds[1], asym_bounds[1], 20.0]
     else:
         raise ValueError("model must be '4PL' or '5PL'")
 
+    p0_clipped = np.clip(p0, lower, upper)
     popt, pcov = curve_fit(
-        func, xf, yf, p0=p0, sigma=sigma, absolute_sigma=False, maxfev=20000
+        func, xf, yf, p0=p0_clipped, sigma=sigma, absolute_sigma=False,
+        bounds=(lower, upper), maxfev=20000,
     )
     params = dict(zip(param_names, popt))
 
@@ -138,6 +157,21 @@ def fit_curve(
     ss_res = np.nansum((yf - y_pred) ** 2)
     ss_tot = np.nansum((yf - np.mean(yf)) ** 2)
     r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    warnings = []
+    if not (x_lo <= params["C"] <= x_hi):
+        warnings.append(
+            f"EC50 (C={params['C']:.4g}) falls outside the tested standard range "
+            f"[{x_lo:.4g}, {x_hi:.4g}] -- one plateau isn't constrained by data "
+            "(e.g. a top/bottom standard was excluded or missing). Treat the fit "
+            "as extrapolated and consider adding a standard beyond this range."
+        )
+    tol = 1e-6
+    if any(abs(p - lo) <= tol * max(1, abs(lo)) or abs(p - hi) <= tol * max(1, abs(hi)) for p, lo, hi in zip(popt, lower, upper)):
+        warnings.append(
+            "One or more fitted parameters landed at the edge of their allowed range, "
+            "meaning the data don't clearly determine it -- results may be unreliable."
+        )
 
     if model == "4PL":
         predict = lambda xx: logistic_4pl(xx, *popt)
@@ -156,4 +190,5 @@ def fit_curve(
         weights=sigma,
         predict=predict,
         invert=invert,
+        warnings=warnings,
     )

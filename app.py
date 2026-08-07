@@ -220,6 +220,9 @@ if st.button("Run analysis", type="primary"):
     m2.metric("R²", f"{result.fit.r_squared:.4f}")
     m3.metric("Blank OD subtracted", f"{result.blank_od:.4f}")
 
+    for w in result.fit.warnings:
+        st.warning(w)
+
     fig1 = plot_standard_curve(result)
     fig2 = plot_sample_bar(result)
     p1, p2 = st.columns(2)
