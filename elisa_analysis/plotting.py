@@ -179,7 +179,7 @@ def plot_sample_bar(result: AnalysisResult, title: str = None, ax=None):
         if not finite_mask.iloc[i]:
             has_no_data_label = True
             ax.text(
-                x_pos[i], 0, f" {row['Flag'] or 'N/A'} ",
+                x_pos[i], 0, " Out of range ",
                 ha="center", va="bottom", rotation=90, fontsize=8.5,
                 color=PRISM_RED, fontweight="bold", zorder=4,
             )
@@ -203,7 +203,7 @@ def plot_sample_bar(result: AnalysisResult, title: str = None, ax=None):
     if has_star:
         key_lines.append("*  flagged (outside calibrated range and/or CV > 15%)")
     if has_no_data_label:
-        key_lines.append("no bar (label only) = instrument reported a non-numeric\nreading (e.g. OVER); no concentration could be calculated")
+        key_lines.append("\"Out of range\" (no bar) = instrument reported a non-numeric\nreading (e.g. OVER); no concentration could be calculated")
     if key_lines:
         ax.text(
             0.02, 0.97, "\n".join(key_lines),
