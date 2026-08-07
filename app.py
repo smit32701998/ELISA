@@ -5,6 +5,7 @@ charts -- no command line required.
 Run with:
     streamlit run app.py
 """
+import hashlib
 import io
 import re
 import tempfile
@@ -180,9 +181,33 @@ if embedded_plate_map is not None:
 layout_file = st.file_uploader(
     "Optional: upload a saved layout workbook (.xlsx)", type=["xlsx"], key="layout_upload"
 )
+layout_bytes = layout_file.getvalue() if layout_file is not None else b""
 
-if "label_grid_df" not in st.session_state:
-    if combined_layout is not None:
+# The layout editors below must re-initialize whenever the *source* of the
+# layout changes (a new raw file, a newly uploaded layout workbook) but must
+# NOT reset on every rerun -- otherwise the auto-detected plate map would
+# flash in and then immediately get wiped back to blank/default on the next
+# rerun, and any manual edits would be lost every time a button is clicked
+# elsewhere on the page. Version the source by content hash, and recompute
+# the initial dataframes (as well as bump the editors' widget keys, since
+# Streamlit ignores a changed initial value for a key that already has
+# stored widget state) only when that hash actually changes.
+data_version = hashlib.md5(raw_bytes + b"|" + layout_bytes).hexdigest()[:12]
+
+if st.session_state.get("_layout_data_version") != data_version:
+    if layout_file is not None:
+        try:
+            label_grid0, std0, smp0 = read_layout_workbook(io.BytesIO(layout_bytes))
+            st.session_state["label_grid_df"] = layout_grid_to_dataframe(label_grid0)
+            st.session_state["standards_df"] = std0 if not std0.empty else default_standards_dataframe()
+            st.session_state["samples_df"] = smp0 if not smp0.empty else default_samples_dataframe()
+            st.success("Layout loaded from the uploaded workbook.")
+        except ValueError as exc:
+            st.error(str(exc))
+            st.session_state["label_grid_df"] = default_layout_dataframe()
+            st.session_state["standards_df"] = default_standards_dataframe()
+            st.session_state["samples_df"] = default_samples_dataframe()
+    elif combined_layout is not None:
         label_grid0, std0, smp0 = combined_layout
         st.session_state["label_grid_df"] = layout_grid_to_dataframe(label_grid0)
         st.session_state["standards_df"] = std0 if not std0.empty else default_standards_dataframe()
@@ -196,35 +221,30 @@ if "label_grid_df" not in st.session_state:
         st.session_state["label_grid_df"] = default_layout_dataframe()
         st.session_state["standards_df"] = default_standards_dataframe()
         st.session_state["samples_df"] = default_samples_dataframe()
-
-if layout_file is not None:
-    try:
-        label_grid_u, std_u, smp_u = read_layout_workbook(io.BytesIO(layout_file.getvalue()))
-        st.session_state["label_grid_df"] = layout_grid_to_dataframe(label_grid_u)
-        st.session_state["standards_df"] = std_u
-        st.session_state["samples_df"] = smp_u if not smp_u.empty else default_samples_dataframe()
-        st.success("Layout loaded from the uploaded workbook.")
-    except ValueError as exc:
-        st.error(str(exc))
+    st.session_state["_layout_data_version"] = data_version
 
 st.subheader("Plate layout")
 st.caption(
     "STDn for standards (must match the Standards table), BLANK for zero/blank wells, "
     "any short code (e.g. UNK1) for a sample. Repeat a label across wells for replicates."
 )
-layout_df = st.data_editor(st.session_state["label_grid_df"], key="layout_editor", width="stretch")
+layout_df = st.data_editor(
+    st.session_state["label_grid_df"], key=f"layout_editor_{data_version}", width="stretch"
+)
 
 col_a, col_b = st.columns(2)
 with col_a:
     st.subheader("Standards")
     standards_df = st.data_editor(
-        st.session_state["standards_df"], num_rows="dynamic", key="standards_editor", width="stretch"
+        st.session_state["standards_df"], num_rows="dynamic",
+        key=f"standards_editor_{data_version}", width="stretch",
     )
 with col_b:
     st.subheader("Samples (optional)")
     st.caption("Leave a sample out of this table to default it to Dilution = 1.")
     samples_df = st.data_editor(
-        st.session_state["samples_df"], num_rows="dynamic", key="samples_editor", width="stretch"
+        st.session_state["samples_df"], num_rows="dynamic",
+        key=f"samples_editor_{data_version}", width="stretch",
     )
 
 label_grid = dataframe_to_layout_grid(layout_df)
